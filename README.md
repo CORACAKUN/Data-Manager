@@ -124,5 +124,5 @@ It allows users to upload JSON/Excel files, view and edit data in a modern table
 
 1. Clone this repo:
    ```bash
-   git clone [https://github.com/your-username/data-manager.git](https://github.com/CORACAKUN/Data-Manager.git)
+   git clone https://github.com/CORACAKUN/Data-Manager.git
    cd data-manager
