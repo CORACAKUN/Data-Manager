@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>📂 Data Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <!-- Bootstrap Icons (correct CSS import) -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <!-- SheetJS -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body { background: #f5f6fa; }
+    .card { border-radius: 1rem; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+    td[contenteditable="true"] { background: #fffdf7; border: 1px dashed #e5e5e5; }
+    th { cursor: grab; user-select: none; }
+    th.dragging { opacity: 0.5; background: #ffe08a !important; }
+    #historyLog { max-height: 260px; overflow-y: auto; font-size: 0.9rem; border: 1px solid #e3e3e3; border-radius: .5rem; background: #fff; padding: 10px; }
+    #historyLog p { margin: 0 0 6px; }
+  </style>
+</head>
+<body class="p-4">
+
+<div class="container">
+  <div class="card p-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="text-primary mb-0">📂 Data Manager</h2>
+      <!-- Custom reload button that shows our modal -->
+      <button class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#reloadModal">
+        <i class="bi bi-arrow-repeat me-1"></i> Reload
+      </button>
+    </div>
+
+    <!-- File Upload -->
+    <div class="mb-3">
+      <input type="file" id="fileInput" class="form-control form-control-lg" accept=".json,.xlsx,.xls" />
+    </div>
+
+    <!-- Controls -->
+    <div class="mb-3 d-flex flex-wrap gap-2">
+      <button class="btn btn-outline-secondary" onclick="undo()"><i class="bi bi-arrow-counterclockwise me-1"></i> Undo</button>
+      <button class="btn btn-outline-secondary" onclick="redo()"><i class="bi bi-arrow-clockwise me-1"></i> Redo</button>
+      <button class="btn btn-success" onclick="downloadJSON()"><i class="bi bi-filetype-json me-1"></i> JSON</button>
+      <button class="btn btn-primary" onclick="downloadExcel()"><i class="bi bi-file-earmark-excel me-1"></i> Excel</button>
+      <button class="btn btn-warning" onclick="addRow()"><i class="bi bi-plus-lg me-1"></i> Add Row</button>
+      <button class="btn btn-info" data-bs-toggle="modal" data-bs-target="#addColumnModal"><i class="bi bi-plus-square me-1"></i> Add Column</button>
+    </div>
+
+    <!-- Search & Sort (hidden by default) -->
+    <div id="filterSection" class="row mb-3 d-none">
+      <div class="col-md-6">
+        <input type="text" id="searchInput" class="form-control" placeholder="🔍 Live search..." oninput="applyFilters()" />
+      </div>
+      <div class="col-md-6">
+        <select id="sortSelect" class="form-select" onchange="applyFilters()">
+          <option value="">Sort by...</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Data Table -->
+    <div class="table-responsive mb-3">
+      <table class="table table-bordered table-striped align-middle" id="dataTable">
+        <thead class="table-dark"></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Collapsible History (hidden by default until used) -->
+    <div id="historyWrapper" class="d-none">
+      <button class="btn btn-outline-dark mb-2" data-bs-toggle="collapse" data-bs-target="#historyCollapse" aria-expanded="false">
+        <i class="bi bi-clock-history me-1"></i> History <span class="badge text-bg-secondary ms-1" id="historyCount">0</span>
+      </button>
+      <div class="collapse" id="historyCollapse">
+        <div id="historyLog"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add Column Modal -->
+<div class="modal fade" id="addColumnModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content rounded-3 shadow">
+      <div class="modal-header">
+        <h5 class="modal-title">➕ Add New Column</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <input type="text" id="newColumnName" class="form-control" placeholder="Enter column name" />
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-info" onclick="confirmAddColumn()">Add Column</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Reload Confirmation Modal (custom for our Reload button) -->
+<div class="modal fade" id="reloadModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content rounded-3 shadow">
+      <div class="modal-header">
+        <h5 class="modal-title text-danger">⚠️ Confirm Reload</h5>
+      </div>
+      <div class="modal-body">
+        <p>Reloading will lose unsaved changes. Do you want to proceed?</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-danger" onclick="location.reload()">Reload Anyway</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Bootstrap Bundle -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+  // --- State ---
+  let data = [];
+  let columnOrder = [];
+  let historyStack = [];
+  let redoStack = [];
+  let originalFilename = "data";
+
+  const fileInput = document.getElementById("fileInput");
+  const table = document.getElementById("dataTable");
+  const filterSection = document.getElementById("filterSection");
+  const historyWrapper = document.getElementById("historyWrapper");
+  const historyLog = document.getElementById("historyLog");
+  const historyCount = document.getElementById("historyCount");
+
+  // Use native confirmation on real page unload (F5/close/tab)
+  window.addEventListener("beforeunload", (e) => {
+    if (historyStack.length > 0) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
+
+  fileInput.addEventListener("change", handleFile);
+
+  // --- Utility: show sections after first data appears ---
+  function revealUI() {
+    filterSection.classList.remove("d-none");
+    historyWrapper.classList.remove("d-none");
+  }
+
+  // --- Logging / History (collapsible) ---
+  function logAction(text) {
+    const time = new Date().toLocaleTimeString();
+    const p = document.createElement("p");
+    p.textContent = `[${time}] ${text}`;
+    historyLog.prepend(p);
+    // bump counter
+    historyCount.textContent = String(+historyCount.textContent + 1);
+    // ensure wrapper visible
+    historyWrapper.classList.remove("d-none");
+  }
+
+  function saveState(label = null) {
+    historyStack.push(JSON.stringify({ data, columnOrder }));
+    if (historyStack.length > 100) historyStack.shift();
+    redoStack = [];
+    if (label) logAction(label);
+  }
+
+  function undo() {
+    if (historyStack.length > 1) {
+      redoStack.push(historyStack.pop());
+      const prev = JSON.parse(historyStack[historyStack.length - 1]);
+      data = prev.data;
+      columnOrder = prev.columnOrder;
+      renderTable(currentView());
+      logAction("Undo last action");
+    }
+  }
+
+  function redo() {
+    if (redoStack.length > 0) {
+      const state = redoStack.pop();
+      historyStack.push(state);
+      const next = JSON.parse(state);
+      data = next.data;
+      columnOrder = next.columnOrder;
+      renderTable(currentView());
+      logAction("Redo last action");
+    }
+  }
+
+  // --- File handling ---
+  function handleFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    originalFilename = file.name.split(".")[0];
+
+    const reader = new FileReader();
+    if (file.name.toLowerCase().endsWith(".json")) {
+      reader.onload = (evt) => {
+        data = JSON.parse(evt.target.result || "[]");
+        columnOrder = data.length ? Object.keys(data[0]) : [];
+        saveState("Loaded JSON file");
+        renderTable(currentView());
+        populateSortOptions();
+        revealUI();
+      };
+      reader.readAsText(file);
+    } else {
+      reader.onload = (evt) => {
+        const wb = XLSX.read(evt.target.result, { type: "binary" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        data = XLSX.utils.sheet_to_json(sheet);
+        columnOrder = data.length ? Object.keys(data[0]) : [];
+        saveState("Loaded Excel file");
+        renderTable(currentView());
+        populateSortOptions();
+        revealUI();
+      };
+      reader.readAsBinaryString(file);
+    }
+  }
+
+  // --- Table render (+ drag columns) ---
+  function renderTable(view) {
+    const thead = table.querySelector("thead");
+    const tbody = table.querySelector("tbody");
+    thead.innerHTML = "";
+    tbody.innerHTML = "";
+
+    if (!data.length && !columnOrder.length) return;
+
+    // Header
+    const headerRow = document.createElement("tr");
+    columnOrder.forEach((h, index) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      th.setAttribute("draggable", "true");
+      th.dataset.index = index;
+      th.addEventListener("dragstart", dragStart);
+      th.addEventListener("dragover", dragOver);
+      th.addEventListener("drop", drop);
+      th.addEventListener("dragend", dragEnd);
+      headerRow.appendChild(th);
+    });
+
+    // Actions header
+    const thAction = document.createElement("th");
+    thAction.textContent = "Actions";
+    headerRow.appendChild(thAction);
+    thead.appendChild(headerRow);
+
+    // Body
+    (view || data).forEach((row, rowIndex) => {
+      const tr = document.createElement("tr");
+      columnOrder.forEach((h) => {
+        const td = document.createElement("td");
+        td.textContent = row[h] ?? "";
+        td.contentEditable = "true";
+        td.addEventListener("input", () => {
+          row[h] = td.textContent;
+          saveState(`Edited [Row ${rowIndex + 1}, "${h}"] → "${td.textContent}"`);
+        });
+        tr.appendChild(td);
+      });
+
+      // Actions cell — now with visible "Delete" text
+      const tdAction = document.createElement("td");
+      const btn = document.createElement("button");
+      btn.className = "btn btn-sm btn-danger";
+      btn.innerHTML = `<i class="bi bi-trash me-1"></i> Delete`;
+      btn.addEventListener("click", () => {
+        const idx = data.indexOf(row); // works for filtered view (same object reference)
+        if (idx > -1) {
+          data.splice(idx, 1);
+          saveState(`Deleted row ${rowIndex + 1}`);
+          renderTable(currentView());
+        }
+      });
+      tdAction.appendChild(btn);
+      tr.appendChild(tdAction);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  // --- Column drag & drop ---
+  let draggedIndex;
+  function dragStart(e) { draggedIndex = +e.target.dataset.index; e.target.classList.add("dragging"); }
+  function dragOver(e) { e.preventDefault(); }
+  function drop(e) {
+    const targetIndex = +e.target.dataset.index;
+    if (draggedIndex === targetIndex) return;
+    const moved = columnOrder.splice(draggedIndex, 1)[0];
+    columnOrder.splice(targetIndex, 0, moved);
+    saveState(`Moved column "${moved}" from ${draggedIndex + 1} → ${targetIndex + 1}`);
+    renderTable(currentView());
+  }
+  function dragEnd(e) { e.target.classList.remove("dragging"); }
+
+  // --- Add row/column ---
+  function addRow() {
+    if (columnOrder.length === 0) columnOrder = ["Column1"];
+    const newRow = {};
+    columnOrder.forEach((h) => (newRow[h] = ""));
+    data.push(newRow);
+    saveState("Added new row");
+    renderTable(currentView());
+    revealUI();
+    populateSortOptions();
+  }
+
+  function confirmAddColumn() {
+    const input = document.getElementById("newColumnName");
+    const colName = input.value.trim();
+    if (!colName) return;
+    if (columnOrder.includes(colName)) {
+      input.focus();
+      return;
+    }
+    columnOrder.push(colName);
+    if (data.length === 0) data.push({}); // ensure at least one row to show the column
+    data.forEach((row) => (row[colName] = row[colName] ?? ""));
+    saveState(`Added column "${colName}"`);
+    input.value = "";
+    bootstrap.Modal.getInstance(document.getElementById("addColumnModal")).hide();
+    renderTable(currentView());
+    revealUI();
+    populateSortOptions();
+  }
+
+  // --- Search & Sort (current view only) ---
+  function currentView() {
+    const q = (document.getElementById("searchInput")?.value || "").toLowerCase();
+    const sortCol = document.getElementById("sortSelect")?.value || "";
+    let view = data.filter((row) =>
+      columnOrder.some((k) => String(row[k] ?? "").toLowerCase().includes(q))
+    );
+
+    if (sortCol) {
+      // type-aware-ish sort
+      const coerce = (v) => {
+        if (/^\d{4}$/.test(String(v))) return parseInt(v);    // year-like
+        const n = parseFloat(v);
+        return isNaN(n) ? String(v).toLowerCase() : n;        // number or string
+      };
+      view.sort((a, b) => {
+        const A = coerce(a[sortCol]), B = coerce(b[sortCol]);
+        if (A < B) return -1;
+        if (A > B) return 1;
+        return 0;
+      });
+    }
+    return view;
+  }
+
+  function applyFilters() {
+    renderTable(currentView());
+  }
+
+  function populateSortOptions() {
+    const sortSelect = document.getElementById("sortSelect");
+    sortSelect.innerHTML = `<option value="">Sort by...</option>`;
+    columnOrder.forEach((c) => {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      sortSelect.appendChild(opt);
+    });
+  }
+
+  // --- Download (keeps filename base, adds timestamp for uniqueness) ---
+  function uniqueFilename(base, ext) {
+    return `${base}_${Date.now()}.${ext}`;
+  }
+
+  function downloadJSON() {
+    const blob = new Blob([JSON.stringify(currentView(), null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = uniqueFilename(originalFilename, "json");
+    a.click();
+    logAction("Downloaded JSON (current view)");
+  }
+
+  function downloadExcel() {
+    const ws = XLSX.utils.json_to_sheet(currentView());
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    XLSX.writeFile(wb, uniqueFilename(originalFilename, "xlsx"));
+    logAction("Downloaded Excel (current view)");
+  }
+</script>
+</body>
+</html>
